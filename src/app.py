@@ -34,7 +34,7 @@ descriptions = {
     "temperature": "Enter the models temperature for the response. If you are unsure, leave this at 0.9.",
     "task_timeout": "Enter the maximum number of seconds to wait for a response from the model before retrying the request. If you are unsure, leave this at 20.",
     "sleep_time": "Enter the number of seconds to wait between failed requests to the model. If you are unsure, leave this at 10.",
-    "input_column": "Enter the column number of the input data in the input file. Ex: If the input column is C then enter 3.",
+    "input_columns": "Enter the column numbers of the input data in the input file. Must be seperated by commas. Ex: If the input data is in columns A and B then enter 1,2.",
     "output_column": "Enter the column number of the output data in the input file. Usually this is the same as the input column. Ex: If the output column is C then enter 3.",
     "system_msg": "Enter the role you want the model to take on. Ex: You are a helpful assistant. If you aren't sure just leave it",
     "row_start": "Enter the row number to start on in the input file. Ex: If you want to start on row 2 then enter 2. If you want to start on the first row then enter: start.",
@@ -57,7 +57,7 @@ config_display = {
     "temperature": "Model Temperature",
     "task_timeout": "Model Response Timeout",
     "sleep_time": "Model Sleep Time",
-    "input_column": "Input Column",
+    "input_columns": "Input Columns",
     "output_column": "Output Column",
     "row_start": "Row Start",
     "row_end": "Row End",
@@ -71,7 +71,7 @@ default_config = {
     "output_file": "output_data.csv",
     "include_headers": True,
     "keep_data": True,
-    "max_workers": 15,
+    "max_workers": 50,
     "model": "gpt-3.5-turbo",
     "input_cost": 0.0015,
     "output_cost": 0.002,
@@ -79,7 +79,7 @@ default_config = {
     "temperature": 0.9,
     "task_timeout": 20,
     "sleep_time": 10,
-    "input_column": 2,
+    "input_columns": 2,
     "output_column": 2,
     "row_start": "start",
     "row_end": "end",
@@ -112,6 +112,7 @@ def is_api_key_valid(api_key):
 def check_if_output_file(file_path):
     # check if output file is writeable to. ie is not open in another program
     with open(file_path, 'w') as f:
+        f.close()
         pass
 
 def check_if_csv_file(file_path):
@@ -152,17 +153,17 @@ def get_datadir() -> pathlib.Path:
 
 class MainFrame(wx.Frame):
     def __init__(self):
-        wx.Frame.__init__(self, None, title="Callio", size=(1000, 1300))
+        wx.Frame.__init__(self, None, title="Callio", size=(600, 800))
         panel = wx.Panel(self)
         
         self.dir_path = get_datadir() / "Callio"
-
+        self.text_font = wx.Font(12, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+        
         try:
             os.mkdir(str(self.dir_path))
         except FileExistsError:
             pass       
         
-
         self.file_path = str(self.dir_path  / 'config.json')
 
         if not os.path.isfile(self.file_path):
@@ -197,12 +198,10 @@ class MainFrame(wx.Frame):
                 self.text_boxes[key] = wx.CheckBox(panel)
                 # Check or uncheck the box based on the current value.
                 self.text_boxes[key].SetValue(self.config.get(key, False))
+            
             else:
-                self.text_boxes[key] = wx.TextCtrl(panel, size=(400, 50))
-                if key == "input_file":
-                    self.text_boxes[key].SetValue("Click to Browse Files")
-                else:
-                    self.text_boxes[key].SetValue(str(self.config[key]))
+                self.text_boxes[key] = wx.TextCtrl(panel)
+                self.text_boxes[key].SetValue(str(self.config[key]))
 
             if self.text_boxes[key].GetContainingSizer() is not None:
                 self.text_boxes[key].GetContainingSizer().Detach(self.text_boxes[key])
@@ -325,11 +324,13 @@ class MainFrame(wx.Frame):
                     f"Invalid context: {message}", "Error", wx.OK | wx.ICON_ERROR
                 )
                 self.view_edit_context(event)
+        self.update_config()
             
     def show_description(self, event):
         label = event.GetEventObject()
         description = label.GetToolTip().GetTip()
         wx.MessageBox(description, "Description", wx.OK | wx.ICON_INFORMATION)
+
 
     def add_context(self, event):
         entries = ["User", "Assistant"]
@@ -348,7 +349,7 @@ class MainFrame(wx.Frame):
                     response = self.sample_assistant_response()
                     default = response
                     
-                dialog = wx.TextEntryDialog(None, "Enter text for: " + role, value=default)
+                dialog = wx.TextEntryDialog(None, "Enter text for: " + role, style = wx.TE_MULTILINE|wx.RESIZE_BORDER|wx.OK|wx.CANCEL, value=default)
 
 
                 if dialog.ShowModal() == wx.ID_OK:
@@ -375,12 +376,6 @@ class MainFrame(wx.Frame):
         self.config["context"] = self.context
         # check if input file exist
                 
-        # check if api_key is valid
-        if not is_api_key_valid(self.config["api_key"]):
-            wx.MessageBox(
-                "Provided API Key isn't Valid", "Error", wx.OK | wx.ICON_ERROR
-            )
-            return
 
     def run_script(self, event):
         

@@ -23,7 +23,7 @@ class Job:
         self.task_timeout = self.config["task_timeout"]
         self.sleep_time = self.config["sleep_time"]
         self.input_column = self.config["input_column"] - 1
-        self.output_column = self.config["output_column"] - 1
+        self.output_column = self.input_column ## NEED TO ADD FUNCTIONALITY TO CHANGE OUTPUT COLUMN
         self.system_msg = self.config["system_msg"]
         self.context = self.config["context"]
         self.output_data = []
