@@ -3,13 +3,13 @@ import json
 import subprocess
 import os
 import openai
+from openai import OpenAI
 import csv
 from job import response as response
 from job import main
 
 import pathlib
 import sys
-from subprocess import Popen, CREATE_NEW_CONSOLE
 
 import ctypes
 try:
@@ -37,6 +37,7 @@ descriptions = {
     "input_columns": "Enter the column numbers of the input data in the input file. Must be seperated by commas. Ex: If the input data is in columns A and B then enter 1,2.",
     "output_column": "Enter the column number of the output data in the input file. Usually this is the same as the input column. Ex: If the output column is C then enter 3.",
     "system_msg": "Enter the role you want the model to take on. Ex: You are a helpful assistant. If you aren't sure just leave it",
+    "separator": "Enter the separator that you want between data from multiple rows. If you want {productName} - {price} then enter ' - '. This will only work if multiple input columns are provided",
     "row_start": "Enter the row number to start on in the input file. Ex: If you want to start on row 2 then enter 2. If you want to start on the first row then enter: start.",
     "row_end": "Enter the row number to end on in the input file. Ex: If you want to end on row 100 then enter 100. If you want to end on the last row then enter: end.",
     # and so on for each parameter in your config file
@@ -61,6 +62,7 @@ config_display = {
     "output_column": "Output Column",
     "row_start": "Row Start",
     "row_end": "Row End",
+    "separator": "Separator",
     "system_msg": "System Message",
 }
 
@@ -79,11 +81,13 @@ default_config = {
     "temperature": 0.9,
     "task_timeout": 20,
     "sleep_time": 10,
-    "input_columns": 2,
+    "input_columns": "2",
     "output_column": 2,
     "row_start": "start",
     "row_end": "end",
+    "separator": " - ",
     "system_msg": "You are a helpful assistant",
+    "sample_inputs": "",
 }
 
 
@@ -96,17 +100,6 @@ def is_valid_json(json_string):
 
 
 
-
-def is_api_key_valid(api_key):
-    try:
-        openai.api_key = api_key
-        response = openai.Completion.create(
-            engine="davinci", prompt="This is a test.", max_tokens=5
-        )
-    except:
-        return False
-    else:
-        return True
 
 
 def check_if_output_file(file_path):
@@ -155,15 +148,15 @@ class MainFrame(wx.Frame):
     def __init__(self):
         wx.Frame.__init__(self, None, title="Callio", size=(600, 800))
         panel = wx.Panel(self)
-        
+
         self.dir_path = get_datadir() / "Callio"
         self.text_font = wx.Font(12, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
-        
+
         try:
             os.mkdir(str(self.dir_path))
         except FileExistsError:
-            pass       
-        
+            pass
+
         self.file_path = str(self.dir_path  / 'config.json')
 
         if not os.path.isfile(self.file_path):
@@ -174,12 +167,17 @@ class MainFrame(wx.Frame):
             with open(self.file_path, "r") as f:
                 self.config = json.load(f)
                 self.context = self.config["context"]
+                for key in default_config.keys():
+                    if key not in self.config:
+                        self.config[key] = default_config[key]
 
         self.text_boxes = dict()
         vbox = wx.BoxSizer(wx.VERTICAL)
 
         for i, key in enumerate(self.config.keys()):
             if key == "context":
+                continue
+            if key == "sample_inputs":
                 continue
             hbox = wx.BoxSizer(wx.HORIZONTAL)
 
@@ -190,7 +188,7 @@ class MainFrame(wx.Frame):
             )  # set the description as tooltip
             hbox.Add(label, flag=wx.RIGHT, border=8)
 
-            
+
 
 
             if key in ["include_headers", "keep_data"]:
@@ -198,7 +196,7 @@ class MainFrame(wx.Frame):
                 self.text_boxes[key] = wx.CheckBox(panel)
                 # Check or uncheck the box based on the current value.
                 self.text_boxes[key].SetValue(self.config.get(key, False))
-            
+
             else:
                 self.text_boxes[key] = wx.TextCtrl(panel)
                 self.text_boxes[key].SetValue(str(self.config[key]))
@@ -227,21 +225,42 @@ class MainFrame(wx.Frame):
         self.clear_context_button = wx.Button(panel, label="Clear Context")
         self.clear_context_button.Bind(wx.EVT_BUTTON, self.clear_context)
 
-        """self.count_text = wx.TextCtrl(panel, style=wx.TE_READONLY)
-        self.count_text.SetValue("Count: 0")
-        """
+        self.sample_responses_button = wx.Button(panel, label="Generate Sample Responses")
+        self.sample_responses_button.Bind(wx.EVT_BUTTON, self.sample_responses)
+
         hbox = wx.BoxSizer(wx.HORIZONTAL)
         hbox.Add(self.run_button, flag=wx.RIGHT, border=10)
         hbox.Add(self.context_button, flag=wx.RIGHT, border=10)
         hbox.Add(self.view_context_button, flag=wx.RIGHT, border=10)
-        hbox.Add(self.clear_context_button)
+        hbox.Add(self.clear_context_button, flag=wx.RIGHT, border=10)
 
         vbox.Add(hbox, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        vbox.Add(self.sample_responses_button, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
         #vbox.Add(self.count_text, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
         panel.SetSizer(vbox)
         panel.Fit()
+        try:
+            self.client = OpenAI(api_key=self.config["api_key"])
+        except Exception as e:
+            print(e)
+            self.client = "no client"
 
+    def sample_responses(self, event):
+        input_box = wx.TextEntryDialog(None, "Paste Sample Inputs on newlines", style= wx.TE_MULTILINE|wx.RESIZE_BORDER|wx.OK|wx.CANCEL,value=self.config["sample_inputs"])
+
+        if input_box.ShowModal() == wx.ID_OK:
+            input = input_box.GetValue()
+            self.config["sample_inputs"] = input
+            for line in input.split("\n"):
+                if len(line) > 0:
+                    try:
+                        response = self.sample_assistant_response(line)
+                        print(response)
+                    except Exception as e:
+                        wx.MessageBox(
+                            str(e), "Error", wx.OK | wx.ICON_ERROR)
+                        return
 
     def choose_model(self, event):
         entries = self.get_model_list()
@@ -259,42 +278,39 @@ class MainFrame(wx.Frame):
 
     def get_model_list(self):
         try:
-            openai.api_key = self.config["api_key"]
-            models = openai.Model.list()["data"]
+            models = self.client.models.list()
         except Exception as e:
             print(e)
             return []
 
-        model_list = []
-        for model in models:
-            model_list.append(model["id"])
+        model_list = [model.id for model in models]
         return model_list
-    
-    def sample_assistant_response(self):
-        openai.api_key = self.config["api_key"]
-        message = [{"role": "system", "content": self.config["system_msg"]}] + self.context 
+
+    def sample_assistant_response(self, input):
+        message = [{"role": "system", "content": self.config["system_msg"]}] + self.context
         try:
-            open_response = response("", sleep_time = 1, model=self.config["model"], context=message, timeout=10, temperature=self.config["temperature"], max_tokens = self.config["max_tokens"])
-            open_response = open_response["choices"][0]["message"]["content"]
-        except openai.error.Timeout:
-            open_response = "Timeout occured (replace this)"
-        except Exception as e:
+            open_response = response(self.client, input, timeout = 7, sleep_time = 1, model=self.config["model"], context=message, temperature=self.config["temperature"], max_tokens = self.config["max_tokens"])
+            open_response = open_response.choices[0].message.content
+        except openai.Timeout:
             open_response = ""
-        
+            pass
+        except Exception as e:
+            print(e)
+            open_response = ""
         return open_response
-    
+
     def open_file_dialog(self, event):
-            file_dialog = wx.FileDialog(self, "Open", "", "", 
-                                        "All Files (*.*)|*.*", 
-                                        wx.FD_OPEN | wx.FD_FILE_MUST_EXIST)
+            file_dialog = wx.FileDialog(self, "Open", "", "",
+                                        "All Files (*.*)|*.*",
+                                        wx.FD_OPEN | wx.FD_FILE_MUST_/EXIST)
 
             if file_dialog.ShowModal() == wx.ID_CANCEL:
-                return  
+                return
 
             path = file_dialog.GetPath()
             self.text_boxes["input_file"].SetValue(path)
 
-    
+
     def on_close(self, event):
         # update config file
         for key in self.text_boxes.keys():
@@ -325,7 +341,7 @@ class MainFrame(wx.Frame):
                 )
                 self.view_edit_context(event)
         self.update_config()
-            
+
     def show_description(self, event):
         label = event.GetEventObject()
         description = label.GetToolTip().GetTip()
@@ -342,31 +358,47 @@ class MainFrame(wx.Frame):
 
             for idx in selections:
                 role = entries[idx]
-                
+
                 default = ""
                 # Add additional button for 'Assistant'
                 if role == "Assistant":
-                    response = self.sample_assistant_response()
+                    response = self.sample_assistant_response("")
                     default = response
-                    
+
                 dialog = wx.TextEntryDialog(None, "Enter text for: " + role, style = wx.TE_MULTILINE|wx.RESIZE_BORDER|wx.OK|wx.CANCEL, value=default)
 
 
                 if dialog.ShowModal() == wx.ID_OK:
-                    self.context.append({"role": role.lower(), "content": dialog.GetValue()}) 
-    
+                    self.context.append({"role": role.lower(), "content": dialog.GetValue()})
+
+
+
+
+    def is_api_key_valid(self, api_key):
+        try:
+            response = self.client.completions.create(
+                engine="davinci", prompt="This is a test.", max_tokens=5
+            )
+        except:
+            return False
+
+        return True
+
+
+
     def save_config(self):
         self.update_config()
         with open(self.file_path, "w") as f:
             json.dump(self.config, f)
-    
+
     def update_config(self):
         # update config file
         for key in self.config.keys():
             if key == "context":
                 continue
+            if key == "sample_inputs":
+                continue
             value = self.text_boxes[key].GetValue()
-
             if isinstance(self.config[key], int):
                 value = int(value)
             elif isinstance(self.config[key], float):
@@ -375,10 +407,10 @@ class MainFrame(wx.Frame):
             self.config[key] = value
         self.config["context"] = self.context
         # check if input file exist
-                
+
 
     def run_script(self, event):
-        
+
         self.save_config()
         os.system('cls' if os.name == 'nt' else 'clear')
 
@@ -393,7 +425,7 @@ class MainFrame(wx.Frame):
             check_if_output_file(self.config["output_file"])
         except Exception as e:
             wx.MessageBox(
-                str(e),
+                f"Job Error: {e}",
                 "Error",
                 wx.OK | wx.ICON_ERROR,
             )
