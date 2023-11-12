@@ -5,11 +5,15 @@ import os
 import openai
 from openai import OpenAI
 import csv
+import threading
 from job import response as response
 from job import main
+from job import read_csv_file as read_csv_file
 
 import pathlib
 import sys
+
+import queue
 
 import ctypes
 try:
@@ -87,7 +91,9 @@ default_config = {
     "row_end": "end",
     "separator": " - ",
     "system_msg": "You are a helpful assistant",
+    # App Parameters
     "sample_inputs": "",
+    "frame_size": (800, 800),
 }
 
 
@@ -146,9 +152,7 @@ def get_datadir() -> pathlib.Path:
 
 class MainFrame(wx.Frame):
     def __init__(self):
-        wx.Frame.__init__(self, None, title="Callio", size=(600, 800))
-        panel = wx.Panel(self)
-
+        
         self.dir_path = get_datadir() / "Callio"
         self.text_font = wx.Font(12, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
 
@@ -170,14 +174,22 @@ class MainFrame(wx.Frame):
                 for key in default_config.keys():
                     if key not in self.config:
                         self.config[key] = default_config[key]
-
+                delete_keys = [key for key in self.config.keys() if key not in default_config.keys()]
+                for key in delete_keys:
+                    del self.config[key]
         self.text_boxes = dict()
+        
+        wx.Frame.__init__(self, None, title="Callio", size=self.config["frame_size"])
+        panel = wx.Panel(self)
+        
         vbox = wx.BoxSizer(wx.VERTICAL)
 
         for i, key in enumerate(self.config.keys()):
             if key == "context":
                 continue
             if key == "sample_inputs":
+                continue
+            if key == "frame_size":
                 continue
             hbox = wx.BoxSizer(wx.HORIZONTAL)
 
@@ -246,21 +258,85 @@ class MainFrame(wx.Frame):
             print(e)
             self.client = "no client"
 
-    def sample_responses(self, event):
-        input_box = wx.TextEntryDialog(None, "Paste Sample Inputs on newlines", style= wx.TE_MULTILINE|wx.RESIZE_BORDER|wx.OK|wx.CANCEL,value=self.config["sample_inputs"])
+        self.response_queue = queue.Queue()
 
-        if input_box.ShowModal() == wx.ID_OK:
-            input = input_box.GetValue()
-            self.config["sample_inputs"] = input
-            for line in input.split("\n"):
-                if len(line) > 0:
+    def generate_sample_inputs(self, number):
+        _, _, input_column_data = read_csv_file(self.config["input_file"], self.config["input_columns"], row_start=self.config["row_start"], number=number)
+        sample_inputs = ""
+        for i, input in enumerate(input_column_data):
+            sample_inputs += input + "\n"
+            if i >= number - 1:
+                break
+        return sample_inputs
+
+    def sample_responses(self, event):
+        self.update_config()
+        # Create a popup box for user to select if they want to paste sample inputs or generate them from file
+        dlg = wx.SingleChoiceDialog(None, 'Select Option', 'Choices', ["Paste Sample Inputs", "Generate Sample Inputs From File"])
+        if dlg.ShowModal() == wx.ID_OK:
+            selection = dlg.GetSelection()
+            if selection == 0:
+                text = self.config["sample_inputs"]
+            elif selection == 1:
+                # Create a text entry for the user to specify how many
+                input_box = wx.TextEntryDialog(None, "Enter number of sample inputs to read", style=wx.OK|wx.CANCEL,value="10")
+                if input_box.ShowModal() == wx.ID_OK:
+                    number = input_box.GetValue()
                     try:
-                        response = self.sample_assistant_response(line)
-                        print(response)
+                        number = int(number)
+                        text = self.generate_sample_inputs(number)
+                    except ValueError:
+                        wx.MessageBox(
+                            "Invalid number", "Error", wx.OK | wx.ICON_ERROR
+                        )
+                        return
                     except Exception as e:
                         wx.MessageBox(
-                            str(e), "Error", wx.OK | wx.ICON_ERROR)
+                            f"Error generating sample inputs: {e}", "Error", wx.OK | wx.ICON_ERROR
+                        )
                         return
+                else:
+                    return
+        
+        input_box = wx.TextEntryDialog(None, "Paste Sample Inputs on newlines", style=wx.TE_MULTILINE|wx.RESIZE_BORDER|wx.OK|wx.CANCEL,value=text)
+        
+        if input_box.ShowModal() == wx.ID_OK:
+            # Print the current frame size
+            input_data = input_box.GetValue()
+            self.config["sample_inputs"] = input_data
+            self.save_config()
+            os.system('cls' if os.name == 'nt' else 'clear')
+            
+            # Split inputs and process each in a separate thread
+            threads = []
+            for i, line in enumerate(input_data.split("\n")):
+                if len(line) > 0:
+                    thread = threading.Thread(target=self.process_input, args=(i, line, self.response_queue))
+                    threads.append(thread)
+                    
+            # Start threads
+            for thread in threads:
+                thread.start()
+
+            # Wait for all threads to finish
+            for thread in threads:
+                thread.join()
+
+            # Process responses in order
+            responses_in_order = sorted(list(self.response_queue.queue), key=lambda x: x[0])
+            for _, response in responses_in_order:
+                self.print_response(response)
+    
+    def process_input(self, order, line, response_queue):
+        try:
+            response = self.sample_assistant_response(line)
+            response_queue.put((order, response))
+        except Exception as e:
+            response_queue.put((order, str(e)))
+    
+    def print_response(self, response):
+        wx.CallAfter(print, response)
+        wx.CallAfter(print, "\n")
 
     def choose_model(self, event):
         entries = self.get_model_list()
@@ -273,8 +349,6 @@ class MainFrame(wx.Frame):
             if dlg.ShowModal() == wx.ID_OK:
                 selection = dlg.GetSelection()
                 self.text_boxes["model"].SetValue(entries[selection])
-
-
 
     def get_model_list(self):
         try:
@@ -302,7 +376,7 @@ class MainFrame(wx.Frame):
     def open_file_dialog(self, event):
             file_dialog = wx.FileDialog(self, "Open", "", "",
                                         "All Files (*.*)|*.*",
-                                        wx.FD_OPEN | wx.FD_FILE_MUST_/EXIST)
+                                        wx.FD_OPEN | wx.FD_FILE_MUST_EXIST)
 
             if file_dialog.ShowModal() == wx.ID_CANCEL:
                 return
@@ -324,23 +398,26 @@ class MainFrame(wx.Frame):
         self.context = []
 
 
-    def view_edit_context(self, event):
+    def view_edit_context(self, event, temp_context = None):
         if len(self.context) == 0:
             message = ""
         else:
             message = json.dumps(self.context, indent=4)
-        input_box = wx.TextEntryDialog(None, "Edit Context", style= wx.TE_MULTILINE|wx.RESIZE_BORDER|wx.OK|wx.CANCEL,value=message)
+            if temp_context is None:
+                temp_context = message
+        input_box = wx.TextEntryDialog(None, "Edit Context", style= wx.TE_MULTILINE|wx.RESIZE_BORDER|wx.OK|wx.CANCEL,value=temp_context)
         if input_box.ShowModal() == wx.ID_OK:
             valid_context = []
             message = input_box.GetValue()
+            temp_context = message
             if is_valid_json(message):
                 self.context = json.loads(message)
+                self.update_config()
             else:
                 wx.MessageBox(
                     f"Invalid context: {message}", "Error", wx.OK | wx.ICON_ERROR
                 )
-                self.view_edit_context(event)
-        self.update_config()
+                self.view_edit_context(event, temp_context = temp_context)
 
     def show_description(self, event):
         label = event.GetEventObject()
@@ -397,6 +474,10 @@ class MainFrame(wx.Frame):
             if key == "context":
                 continue
             if key == "sample_inputs":
+                continue
+            if key == "frame_size":
+                size = self.GetSize()
+                self.config["frame_size"] = (size[0], size[1])
                 continue
             value = self.text_boxes[key].GetValue()
             if isinstance(self.config[key], int):

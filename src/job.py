@@ -38,7 +38,7 @@ class Job:
 
 
 
-        self.output_column = self.config["output_column"]  ## NEED TO ADD FUNCTIONALITY TO CHANGE OUTPUT COLUMN
+        self.output_column = self.config["output_column"] - 1 
         self.system_msg = self.config["system_msg"]
         self.context = self.config["context"]
         self.output_data = []
@@ -102,7 +102,12 @@ class Job:
                 writer.writerow(self.input_headers)
             if self.keep_data:
                 for i, row in enumerate(self.input_data):
-                    row[self.output_column] = self.output_data[i]
+                    try:
+                        row[self.output_column] = self.output_data[i]
+                    except IndexError:
+                        for j in range(self.output_column - len(row)):
+                            row.append(None)
+                        row.append(self.output_data[i])
                 writer.writerows(self.input_data)
             else:
                 for i in range(len(self.output_data)):
@@ -176,6 +181,52 @@ def response(client, input, timeout, sleep_time, model, context, temperature, ma
         print(f"Service unavailable error in getting response for: {input}: {error}")
         return response(client, input, sleep_time, model, context, temperature, max_tokens)
     return open_ai_res
+
+
+def format_multi_input(input_columns, separator, input_column_data):
+    if len(input_columns) > 1:
+        input_column_data = [separator.join(map(str, params)) for params in zip(*input_column_data)]
+    
+    return input_column_data
+
+def read_csv_file(file_name, input_columns_input, row_start="start", row_end="end", separator=" - ", number=0):
+    with open(file_name, "r", newline="") as input_file:
+        reader = csv.reader(input_file)
+        input_columns = list()
+        for column in input_columns_input.split(","):
+            input_columns.append(int(column) - 1)
+            if int(column) < 0:
+                raise Exception("Input column cannot be less than 0")
+        missing_columns = set(input_columns) - set(range(len(next(reader))))
+        if len(missing_columns) > 0:
+            raise Exception(f"Input column(s) {','.join([str(column + 1) for column in missing_columns])} not found in input file")
+    
+        input_headers = next(reader)
+        reader_len = sum(1 for row in reader)
+        input_file.seek(0)
+        reader = csv.reader(input_file)
+        next(reader)
+        try:
+            row_start = (0 if row_start.lower() == "start" else int(row_start))
+            if number != 0:
+                row_end = row_start + number
+            else:
+                row_end = (reader_len if row_end.lower() == "end" else int(row_end))
+            
+        except ValueError:
+            raise Exception("Row start and row end must be integers or 'start' and 'end'")
+            row_start = "start"
+            row_end = "end"
+        rows = [row for row in reader][row_start:row_end]
+        input_data = [row for row in rows if len(row) > 0]
+        input_column_data = []
+        for column in input_columns:
+            input_column_data.append([row[column] for row in input_data])
+
+        input_column_data = format_multi_input(input_columns, separator, input_column_data)       
+        
+        return input_headers, input_data, input_column_data
+
 
 
 

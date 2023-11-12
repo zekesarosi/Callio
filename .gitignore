@@ -1,3 +1,6 @@
 venv/*
 bin/*
 ex.csv
+output_data.csv
+src/sample.csv
+src/__pycache__/*
