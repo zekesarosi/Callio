@@ -7,8 +7,9 @@ import time
 import os
 
 class Job:
-    def __init__(self, config):
+    def __init__(self, config, log):
         self.config = config
+        self.log = log
         self.api_key = self.config["api_key"]
         self.client = OpenAI(api_key=self.api_key)
         self.input_file_name = self.config["input_file"]
@@ -31,9 +32,11 @@ class Job:
             for column in self.config["input_columns"].split(","):
                 self.input_columns.append(int(column) - 1)
                 if int(column) < 0:
+                    self.log.write("Input column cannot be less than 0")
                     raise Exception("Input column cannot be less than 0")
             missing_columns = set(self.input_columns) - set(range(len(next(reader))))
             if len(missing_columns) > 0:
+                self.log.write("Input column(s) " + str(missing_columns) + " not found in input file")
                 raise Exception("Input column(s) " + str(missing_columns) + " not found in input file")
 
 
@@ -105,6 +108,7 @@ class Job:
                     try:
                         row[self.output_column] = self.output_data[i]
                     except IndexError:
+                        self.log.write("Output column is out of range")
                         for j in range(self.output_column - len(row)):
                             row.append(None)
                         row.append(self.output_data[i])
@@ -116,6 +120,7 @@ class Job:
         print("Job Complete. Output written to: " + self.output_file_name)
         print("Total Cost: $" + str(round(self.cost, 6)))
         print("Total Tokens: " + str(self.input_tokens + self.output_tokens))
+    
     def main(self):
         self.output_data = self.create_workers()
         self.write_data()
@@ -183,10 +188,11 @@ def response(client, input, timeout, sleep_time, model, context, temperature, ma
     return open_ai_res
 
 
-def format_multi_input(input_columns, separator, input_column_data):
+def format_input(input_columns, separator, input_column_data):
     if len(input_columns) > 1:
         input_column_data = [separator.join(map(str, params)) for params in zip(*input_column_data)]
-    
+    else:
+        input_column_data = input_column_data[0]
     return input_column_data
 
 def read_csv_file(file_name, input_columns_input, row_start="start", row_end="end", separator=" - ", number=0):
@@ -195,8 +201,8 @@ def read_csv_file(file_name, input_columns_input, row_start="start", row_end="en
         input_columns = list()
         for column in input_columns_input.split(","):
             input_columns.append(int(column) - 1)
-            if int(column) < 0:
-                raise Exception("Input column cannot be less than 0")
+            if int(column) < 1:
+                raise Exception("Input column cannot be less than 1")
         missing_columns = set(input_columns) - set(range(len(next(reader))))
         if len(missing_columns) > 0:
             raise Exception(f"Input column(s) {','.join([str(column + 1) for column in missing_columns])} not found in input file")
@@ -212,7 +218,14 @@ def read_csv_file(file_name, input_columns_input, row_start="start", row_end="en
                 row_end = row_start + number
             else:
                 row_end = (reader_len if row_end.lower() == "end" else int(row_end))
-            
+            if row_end > reader_len:
+                row_end = reader_len
+            if row_start > row_end:
+                raise Exception("Row start must be less than row end")
+            if row_start < 0:
+                raise Exception("Row start cannot be less than 0")
+            if row_end < 0:
+                raise Exception("Row end cannot be less than 0") 
         except ValueError:
             raise Exception("Row start and row end must be integers or 'start' and 'end'")
             row_start = "start"
@@ -222,16 +235,15 @@ def read_csv_file(file_name, input_columns_input, row_start="start", row_end="en
         input_column_data = []
         for column in input_columns:
             input_column_data.append([row[column] for row in input_data])
-
-        input_column_data = format_multi_input(input_columns, separator, input_column_data)       
+        input_column_data = format_input(input_columns, separator, input_column_data)
         
         return input_headers, input_data, input_column_data
 
 
 
 
-def main(config):
-    job = Job(config)
+def main(config, log):
+    job = Job(config, log)
     job.main()
 
 

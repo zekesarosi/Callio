@@ -6,6 +6,7 @@ import openai
 from openai import OpenAI
 import csv
 import threading
+from log import Log
 from job import response as response
 from job import main
 from job import read_csv_file as read_csv_file
@@ -105,9 +106,6 @@ def is_valid_json(json_string):
     return True
 
 
-
-
-
 def check_if_output_file(file_path):
     # check if output file is writeable to. ie is not open in another program
     with open(file_path, 'w') as f:
@@ -149,19 +147,18 @@ def get_datadir() -> pathlib.Path:
 
 
 
-
 class MainFrame(wx.Frame):
     def __init__(self):
-        
         self.dir_path = get_datadir() / "Callio"
         self.text_font = wx.Font(12, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
-
+        
         try:
             os.mkdir(str(self.dir_path))
         except FileExistsError:
             pass
-
+        
         self.file_path = str(self.dir_path  / 'config.json')
+        self.log = Log(str(self.dir_path / "log.txt"))
 
         if not os.path.isfile(self.file_path):
             self.config = default_config.copy()
@@ -237,7 +234,7 @@ class MainFrame(wx.Frame):
         self.clear_context_button = wx.Button(panel, label="Clear Context")
         self.clear_context_button.Bind(wx.EVT_BUTTON, self.clear_context)
 
-        self.sample_responses_button = wx.Button(panel, label="Generate Sample Responses")
+        self.sample_responses_button = wx.Button(panel, label="View Input / Generate Sample Responses")
         self.sample_responses_button.Bind(wx.EVT_BUTTON, self.sample_responses)
 
         hbox = wx.BoxSizer(wx.HORIZONTAL)
@@ -255,13 +252,13 @@ class MainFrame(wx.Frame):
         try:
             self.client = OpenAI(api_key=self.config["api_key"])
         except Exception as e:
-            print(e)
+            self.log.write(str(e))
             self.client = "no client"
 
         self.response_queue = queue.Queue()
 
     def generate_sample_inputs(self, number):
-        _, _, input_column_data = read_csv_file(self.config["input_file"], self.config["input_columns"], row_start=self.config["row_start"], number=number)
+        _, _, input_column_data = read_csv_file(self.config["input_file"], self.config["input_columns"], row_start=self.config["row_start"], number=number, separator=self.config["separator"])
         sample_inputs = ""
         for i, input in enumerate(input_column_data):
             sample_inputs += input + "\n"
@@ -272,31 +269,47 @@ class MainFrame(wx.Frame):
     def sample_responses(self, event):
         self.update_config()
         # Create a popup box for user to select if they want to paste sample inputs or generate them from file
-        dlg = wx.SingleChoiceDialog(None, 'Select Option', 'Choices', ["Paste Sample Inputs", "Generate Sample Inputs From File"])
+        dlg = wx.SingleChoiceDialog(None, 'Select Option', 'Choices', ["Write Sample Inputs", "Generate Sample Inputs From File", "View Sample Inputs"])
+        
         if dlg.ShowModal() == wx.ID_OK:
             selection = dlg.GetSelection()
+            
             if selection == 0:
                 text = self.config["sample_inputs"]
-            elif selection == 1:
+            elif selection == 1 or selection == 2: 
                 # Create a text entry for the user to specify how many
-                input_box = wx.TextEntryDialog(None, "Enter number of sample inputs to read", style=wx.OK|wx.CANCEL,value="10")
+                input_box = wx.TextEntryDialog(None, f"Enter number of sample inputs to {('read' if selection == 1 else 'view')}", style=wx.OK|wx.CANCEL,value="10")
                 if input_box.ShowModal() == wx.ID_OK:
                     number = input_box.GetValue()
                     try:
                         number = int(number)
+                        if number < 1:
+                            raise ValueError("Number must be greater than 0")
                         text = self.generate_sample_inputs(number)
-                    except ValueError:
+                    
+                    except ValueError as e:
+                        self.log.write(str(e))
                         wx.MessageBox(
                             "Invalid number", "Error", wx.OK | wx.ICON_ERROR
                         )
                         return
+                    
                     except Exception as e:
+                        self.log.write(str(e))
                         wx.MessageBox(
                             f"Error generating sample inputs: {e}", "Error", wx.OK | wx.ICON_ERROR
                         )
                         return
                 else:
                     return
+        else:
+            return
+    
+        if selection == 2:
+            wx.MessageBox(
+                text, "Sample Inputs", wx.OK 
+            )
+            return
         
         input_box = wx.TextEntryDialog(None, "Paste Sample Inputs on newlines", style=wx.TE_MULTILINE|wx.RESIZE_BORDER|wx.OK|wx.CANCEL,value=text)
         
@@ -326,12 +339,15 @@ class MainFrame(wx.Frame):
             responses_in_order = sorted(list(self.response_queue.queue), key=lambda x: x[0])
             for _, response in responses_in_order:
                 self.print_response(response)
+        else:
+            return
     
     def process_input(self, order, line, response_queue):
         try:
             response = self.sample_assistant_response(line)
             response_queue.put((order, response))
         except Exception as e:
+            self.log.write(str(e))
             response_queue.put((order, str(e)))
     
     def print_response(self, response):
@@ -354,7 +370,7 @@ class MainFrame(wx.Frame):
         try:
             models = self.client.models.list()
         except Exception as e:
-            print(e)
+            self.log.write(str(e))
             return []
 
         model_list = [model.id for model in models]
@@ -366,10 +382,11 @@ class MainFrame(wx.Frame):
             open_response = response(self.client, input, timeout = 7, sleep_time = 1, model=self.config["model"], context=message, temperature=self.config["temperature"], max_tokens = self.config["max_tokens"])
             open_response = open_response.choices[0].message.content
         except openai.Timeout:
-            open_response = ""
+            self.log.write("Timeout error: Sample Assistant Response")
+            open_response = "Timeout"
             pass
         except Exception as e:
-            print(e)
+            self.log.write(str(e))
             open_response = ""
         return open_response
 
@@ -456,7 +473,8 @@ class MainFrame(wx.Frame):
             response = self.client.completions.create(
                 engine="davinci", prompt="This is a test.", max_tokens=5
             )
-        except:
+        except Exception as e:
+            self.log.write(str(e))
             return False
 
         return True
@@ -491,10 +509,8 @@ class MainFrame(wx.Frame):
 
 
     def run_script(self, event):
-
         self.save_config()
         os.system('cls' if os.name == 'nt' else 'clear')
-
         if not check_if_csv_file(self.config["input_file"]):
             wx.MessageBox(
                 "Input file does not exist or not valid csv",
@@ -505,6 +521,7 @@ class MainFrame(wx.Frame):
         try:
             check_if_output_file(self.config["output_file"])
         except Exception as e:
+            self.log.write(str(e))
             wx.MessageBox(
                 f"Job Error: {e}",
                 "Error",
@@ -512,8 +529,9 @@ class MainFrame(wx.Frame):
             )
             return
         try:
-            main(self.config)
+            main(self.config, self.log)
         except Exception as e:
+            self.log.write(f"Job Runtime Error: {e}")
             wx.MessageBox(
                 str(e),
                 "Error",
