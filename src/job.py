@@ -6,11 +6,12 @@ import concurrent.futures
 import time
 import os
 import backoff
+from log import Log
 
 class Job:
-    def __init__(self, config, log):
+    def __init__(self, config, log_path):
         self.config = config
-        self.log = log
+        self.log = Log(log_path)
         self.api_key = self.config["api_key"]
         self.client = OpenAI(api_key=self.api_key)
         self.input_file_name = self.config["input_file"]

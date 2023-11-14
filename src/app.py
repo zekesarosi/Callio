@@ -584,8 +584,8 @@ class MainFrame(wx.Frame):
             return
         try:
             self.disable_ui()
-            self.StatusBar.SetStatusText("Running Job")
-            process = multiprocessing.Process(target=run_script, args=(self.config, self.log))
+            self.StatusBar.SetStatusText("Started Job")
+            process = multiprocessing.Process(target=call_job, args=(self.config, self.log.log_path))
             process.start()
             self.running_processes.append(process)
         except Exception as e:
@@ -599,11 +599,9 @@ class MainFrame(wx.Frame):
             )
             return
 
-def run_script(config, log):
+def call_job(config, log):
     try:
         main(config, log)
-        self.StatusBar.SetStatusText("Job Complete")
-        self.enable_ui()
     except Exception as e:
         raise e
 
