@@ -5,6 +5,7 @@ import csv
 import concurrent.futures
 import time
 import os
+import backoff
 
 class Job:
     def __init__(self, config, log):
@@ -24,45 +25,15 @@ class Job:
         self.temperature = self.config["temperature"]
         self.task_timeout = self.config["task_timeout"]
         self.sleep_time = self.config["sleep_time"]
-        self.input_columns = list()
         self.separator = self.config["separator"]
-        with open(self.input_file_name, "r", newline="") as input_file:
-            reader = csv.reader(input_file)
 
-            for column in self.config["input_columns"].split(","):
-                self.input_columns.append(int(column) - 1)
-                if int(column) < 0:
-                    self.log.write("Input column cannot be less than 0")
-                    raise Exception("Input column cannot be less than 0")
-            missing_columns = set(self.input_columns) - set(range(len(next(reader))))
-            if len(missing_columns) > 0:
-                self.log.write("Input column(s) " + str(missing_columns) + " not found in input file")
-                raise Exception("Input column(s) " + str(missing_columns) + " not found in input file")
-
-
-
+        self.input_headers, self.input_data, self.input_column_data = read_csv_file(self.input_file_name, self.config["input_columns"], self.config["row_start"], self.config["row_end"])
         self.output_column = self.config["output_column"] - 1 
         self.system_msg = self.config["system_msg"]
         self.context = self.config["context"]
         self.output_data = []
         self.cost = 0
         self.message = [{"role": "system", "content": self.system_msg}] + self.context
-        with open(self.input_file_name, "r", newline="") as input_file:
-            reader = csv.reader(input_file)
-            self.input_headers = next(reader)
-            reader_len = sum(1 for row in reader)
-            input_file.seek(0)
-            reader = csv.reader(input_file)
-            next(reader)
-            self.row_start = (0 if self.config["row_start"].lower() == "start" else int(self.config["row_start"]))
-            self.row_end = (reader_len if self.config["row_end"].lower() == "end" else int(self.config["row_end"]))
-            rows = [row for row in reader][self.row_start:self.row_end]
-            self.input_data = [row for row in rows if len(row) > 0]
-            self.input_column_data = []
-            for column in self.input_columns:
-                self.input_column_data.append([row[column] for row in self.input_data])
-
-        self.format_multi_input()
         self.count = len(self.input_column_data)
         self.input_tokens = 0
         self.output_tokens = 0
@@ -81,13 +52,18 @@ class Job:
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=self.max_workers
         ) as executor:
-            futures = executor.map(self.response_wrapper, self.input_column_data)
+            try:
+                futures = executor.map(self.response_wrapper, self.input_column_data)
+            except Exception as error:
+                print(f"Shutting down workers: {error}")
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise error
         return [future for future in futures]
 
 
 
     def response_wrapper(self, input):
-        open_response = response(self.client, input, self.task_timeout, self.sleep_time, self.model, self.message, self.temperature, self.max_tokens)
+        open_response = response(client=self.client, input=input, model=self.model, context=self.message, timeout=self.task_timeout, sleep_time=self.sleep_time, temperature=self.temperature, max_tokens=self.max_tokens)
         self.input_tokens += open_response.usage.prompt_tokens
         self.output_tokens += open_response.usage.completion_tokens
         self.count -= 1
@@ -122,10 +98,11 @@ class Job:
         print("Total Tokens: " + str(self.input_tokens + self.output_tokens))
     
     def main(self):
-        self.output_data = self.create_workers()
-        self.write_data()
-
-
+        try:
+            self.output_data = self.create_workers()
+            self.write_data()
+        except Exception as e:
+            raise e
 
 def retry_with_exponential_backoff(
     func,
@@ -133,7 +110,7 @@ def retry_with_exponential_backoff(
     exponential_base = 2,
     jitter = True,
     max_retries = 20,
-    errors = (openai.RateLimitError, ),
+    errors = (openai.RateLimitError),
 ):
     def wrapper(*args, **kwargs):
         num_retries = 0
@@ -142,7 +119,7 @@ def retry_with_exponential_backoff(
         while True:
             try:
                 return func(*args, **kwargs)
-            except errors as e:
+            except (*errors,) as e:
                 num_retries += 1
                 if num_retries > max_retries:
                     raise Exception("Max retries exceeded")
@@ -155,8 +132,11 @@ def retry_with_exponential_backoff(
 
     return wrapper
 
+def on_giveup(details):
+    raise Exception("Max retries exceeded")
 
-def response(client, input, timeout, sleep_time, model, context, temperature, max_tokens):
+@backoff.on_exception(backoff.expo, openai.RateLimitError, max_tries=15)
+def response(client, input, model, context, timeout=20, sleep_time=10,temperature=1, max_tokens=500):
     if len(input) > 0:
         messages = context + [{"role": "user", "content": input}]
     else:
@@ -170,22 +150,14 @@ def response(client, input, timeout, sleep_time, model, context, temperature, ma
             max_tokens=max_tokens,
             top_p=1,
         )
-
-    except openai.APIError as error:
-        print(f"API error in getting response for: {input}: {error}")
+    except openai.AuthenticationError as error:
+        raise error
+    except openai.APITimeoutError as error:
         time.sleep(sleep_time)
-        return response(client, input, sleep_time, model, context, temperature, max_tokens)
-    except openai.RateLimitError as error:
-        time.sleep(sleep_time)
-        return response(client, input, sleep_time, model, context, temperature, max_tokens)
-    except openai.Timeout as error:
-        time.sleep(sleep_time)
-        return response(client, input, sleep_time, model, context, temperature, max_tokens)
-    except openai.ServiceUnavailableError as error:
-        time.sleep(sleep_time)
-        print(f"Service unavailable error in getting response for: {input}: {error}")
-        return response(client, input, sleep_time, model, context, temperature, max_tokens)
-    return open_ai_res
+        open_ai_res = response(client, input, model, context, timeout, sleep_time, temperature, max_tokens)
+    except Exception as error:
+        raise error
+    return open_ai_res 
 
 
 def format_input(input_columns, separator, input_column_data):
@@ -199,19 +171,19 @@ def read_csv_file(file_name, input_columns_input, row_start="start", row_end="en
     with open(file_name, "r", newline="") as input_file:
         reader = csv.reader(input_file)
         input_columns = list()
+        input_headers = next(reader)
         for column in input_columns_input.split(","):
             input_columns.append(int(column) - 1)
             if int(column) < 1:
                 raise Exception("Input column cannot be less than 1")
-        missing_columns = set(input_columns) - set(range(len(next(reader))))
+        missing_columns = set(input_columns) - set(range(len(input_headers)))
         if len(missing_columns) > 0:
             raise Exception(f"Input column(s) {','.join([str(column + 1) for column in missing_columns])} not found in input file")
     
-        input_headers = next(reader)
         reader_len = sum(1 for row in reader)
         input_file.seek(0)
         reader = csv.reader(input_file)
-        next(reader)
+        next(reader) # skip headers
         try:
             row_start = (0 if row_start.lower() == "start" else int(row_start))
             if number != 0:
