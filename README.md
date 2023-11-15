@@ -1,5 +1,4 @@
-# OpenAI API Call Formatter Scripts
-
+# An AI CSV Parser
 These scripts provide a graphical user interface (GUI) application and job runner for making bulk API calls to the OpenAI API.
 
 ## GUI Script
