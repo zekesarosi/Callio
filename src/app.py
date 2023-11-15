@@ -258,9 +258,9 @@ class MainFrame(wx.Frame):
 
         panel.SetSizer(vbox)
         panel.Fit()
-        self.client = OpenAI(api_key=self.config["api_key"])
-        self.update_config()
-
+        self.client = OpenAI(api_key="")
+        self.api_key_warning = False
+        
     def disable_ui(self):
         for key in self.text_boxes.keys():
             self.text_boxes[key].Disable()
@@ -281,15 +281,15 @@ class MainFrame(wx.Frame):
 
     def set_api_key(self):
         try:
-            self.client = OpenAI(api_key=self.config["api_key"])
-            self.is_api_key_valid()
+            if self.is_api_key_valid(self.config["api_key"]):
+                self.client = OpenAI(api_=self.config["api_key"])
+            else:
+                wx.MessageBox(
+                    "API Key Invalid or Check Connection", "Error", wx.OK | wx.ICON_ERROR
+                )
         except Exception as e:
             self.log.write(str(e))
-            wx.MessageBox(
-                "API Key Invalid or Check Connection", "Error", wx.OK | wx.ICON_ERROR
-            )
-            return
-        return
+            raise e
 
     def generate_sample_inputs(self, number):
         _, _, input_column_data = read_csv_file(self.config["input_file"], self.config["input_columns"], row_start=self.config["row_start"], number=number, separator=self.config["separator"])
@@ -396,13 +396,13 @@ class MainFrame(wx.Frame):
 
     def get_model_list(self):
         try:
+            self.update_config()
             models = self.client.models.list()
+            model_list = [model.id for model in models]
+            return model_list
         except Exception as e:
             self.log.write(str(e))
             return []
-
-        model_list = [model.id for model in models]
-        return model_list
 
     def sample_assistant_response(self, input):
         message = [{"role": "system", "content": self.config["system_msg"]}] + self.context
@@ -514,8 +514,9 @@ class MainFrame(wx.Frame):
 
 
 
-    def is_api_key_valid(self):
+    def is_api_key_valid(self, key):
         try:
+            client = OpenAI(api_key=key)
             response = self.client.completions.create(
                 model="davinci", prompt="This is a test.", max_tokens=5
             )
@@ -525,17 +526,14 @@ class MainFrame(wx.Frame):
             return False
         except Exception as e:
             self.log.write(str(e))
-            raise e
-
-        return True
-
+            return False
 
 
     def save_config(self):
-        self.update_config()
+        flag = self.update_config()
         with open(self.file_path, "w") as f:
             json.dump(self.config, f)
-
+           
     def update_config(self):
         # update config file
         if not self.is_api_key_valid():
@@ -560,7 +558,9 @@ class MainFrame(wx.Frame):
             self.config[key] = value
         self.config["context"] = self.context
         # check if input file exist
-
+        if self.client.api_key != self.config["api_key"]:
+            self.set_api_key()
+            return
 
     def run_script(self, event):
         self.save_config()
