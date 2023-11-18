@@ -4,3 +4,5 @@ ex.csv
 output_data.csv
 src/sample.csv
 src/__pycache__/*
+src/dist/Callio.exe
+*.exe

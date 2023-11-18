@@ -280,16 +280,7 @@ class MainFrame(wx.Frame):
         self.sample_responses_button.Enable()
 
     def set_api_key(self):
-        try:
-            if self.is_api_key_valid(self.config["api_key"]):
-                self.client = OpenAI(api_=self.config["api_key"])
-            else:
-                wx.MessageBox(
-                    "API Key Invalid or Check Connection", "Error", wx.OK | wx.ICON_ERROR
-                )
-        except Exception as e:
-            self.log.write(str(e))
-            raise e
+        self.client = OpenAI(api_key=self.config["api_key"])
 
     def generate_sample_inputs(self, number):
         _, _, input_column_data = read_csv_file(self.config["input_file"], self.config["input_columns"], row_start=self.config["row_start"], number=number, separator=self.config["separator"])
@@ -301,7 +292,9 @@ class MainFrame(wx.Frame):
         return sample_inputs
 
     def sample_responses(self, event):
-        self.update_config()
+        flag = self.update_config(api_check=True)
+        if not flag:
+            return
         # Create a popup box for user to select if they want to paste sample inputs or generate them from file
         dlg = wx.SingleChoiceDialog(None, 'Select Option', 'Choices', ["Write Sample Inputs", "Generate Sample Inputs From File", "View Sample Inputs"])
         
@@ -396,7 +389,9 @@ class MainFrame(wx.Frame):
 
     def get_model_list(self):
         try:
-            self.update_config()
+            flag = self.update_config(api_check=True)
+            if not flag:
+                return
             models = self.client.models.list()
             model_list = [model.id for model in models]
             return model_list
@@ -488,7 +483,8 @@ class MainFrame(wx.Frame):
     def add_context(self, event):
         entries = ["User", "Assistant"]
         dlg = wx.MultiChoiceDialog(None, 'Select Role', 'Choices', entries)
-        self.update_config()
+        if not self.update_config(api_check=True):
+            return
 
         if dlg.ShowModal() == wx.ID_OK:
             selections = dlg.GetSelections()
@@ -529,17 +525,18 @@ class MainFrame(wx.Frame):
             return False
 
 
-    def save_config(self):
-        flag = self.update_config()
+    def save_config(self,api_check=False):
+        flag = self.update_config(api_check)
         with open(self.file_path, "w") as f:
             json.dump(self.config, f)
+        return flag
            
-    def update_config(self):
+    def update_config(self, api_check=False):
         # update config file
-        if not self.is_api_key_valid():
-            self.set_api_key()
-        else:
-            self.set_api_key()
+        flag = True
+
+
+
         for key in self.config.keys():
             if key == "context":
                 continue
@@ -557,13 +554,20 @@ class MainFrame(wx.Frame):
 
             self.config[key] = value
         self.config["context"] = self.context
-        # check if input file exist
-        if self.client.api_key != self.config["api_key"]:
+
+        if not self.client.api_key == self.config["api_key"]:
             self.set_api_key()
-            return
+        
+        if api_check:
+            if not self.is_api_key_valid(self.config["api_key"]):
+               wx.MessageBox("API Key Invalid or Check Connection", "Error", wx.OK | wx.ICON_ERROR)
+               return False
+        return True
 
     def run_script(self, event):
-        self.save_config()
+        flag = self.save_config(api_check=True)
+        if not flag:
+            return
         os.system('cls' if os.name == 'nt' else 'clear')
         if not check_if_csv_file(self.config["input_file"]):
             wx.MessageBox(
