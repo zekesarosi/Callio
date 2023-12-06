@@ -17,12 +17,14 @@ The responses from the LLM's are only as good as the context that is given.
 
 A Bad Example Context:
 
-`[
+```json
+[
     {
         "role": "user",
         "content": "optimize this product name"
     }
-]`
+]
+```
 
 Input:
 "Amethyst Gem in Abstract Cut, 11.03 carats, 17.69 x 13.58 mm, Purple Color"
@@ -32,7 +34,8 @@ Output:
 
 A Good Example Context (contains a curated example for the model to refrence)
 
-`[
+```json
+[
     {
         "role": "user",
         "content": "I'm going to give you a product name from a gemstone website. You will return only the product name with enhanced language - not overdone. The optimized name can't be more than 15 words long. Must be in this format, Name - Color - Size - Weight - Other"
@@ -49,7 +52,8 @@ A Good Example Context (contains a curated example for the model to refrence)
         "role": "assistant",
         "content": "Amethyst Abstract Cut - Purple - 17.69x13.58mm - 11.03ct"
     }
-]`
+]
+```
 
 Input:
 

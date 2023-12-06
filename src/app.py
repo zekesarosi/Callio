@@ -155,16 +155,20 @@ def get_datadir() -> pathlib.Path:
 
 
 
+job_running = False
+
+
 class MainFrame(wx.Frame):
     def __init__(self):
+        global job_running
         self.dir_path = get_datadir() / "Callio"
         self.text_font = wx.Font(12, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
-        
+
         try:
             os.mkdir(str(self.dir_path))
         except FileExistsError:
             pass
-        
+
         self.file_path = str(self.dir_path  / 'config.json')
         self.log = Log(str(self.dir_path / "log.txt"))
 
@@ -186,10 +190,10 @@ class MainFrame(wx.Frame):
                 for key in delete_keys:
                     del self.config[key]
         self.text_boxes = dict()
-        
+
         wx.Frame.__init__(self, None, title="Callio", size=self.config["frame_size"])
         panel = wx.Panel(self)
-        self.StatusBar = self.CreateStatusBar() 
+        self.StatusBar = self.CreateStatusBar()
         self.vbox = wx.BoxSizer(wx.VERTICAL)
         self.Bind(wx.EVT_CLOSE, self.on_close)
         for i, key in enumerate(self.config.keys()):
@@ -261,7 +265,7 @@ class MainFrame(wx.Frame):
         self.api_key_warning = False
 
 
-        
+
     def disable_ui(self):
         for key in self.text_boxes.keys():
             self.text_boxes[key].Disable()
@@ -297,13 +301,13 @@ class MainFrame(wx.Frame):
             return
         # Create a popup box for user to select if they want to paste sample inputs or generate them from file
         dlg = wx.SingleChoiceDialog(None, 'Select Option', 'Choices', ["Write Sample Inputs", "Generate Sample Inputs From File", "View Sample Inputs"])
-        
+
         if dlg.ShowModal() == wx.ID_OK:
             selection = dlg.GetSelection()
-            
+
             if selection == 0:
                 text = self.config["sample_inputs"]
-            elif selection == 1 or selection == 2: 
+            elif selection == 1 or selection == 2:
                 # Create a text entry for the user to specify how many
                 input_box = wx.TextEntryDialog(None, f"Enter number of sample inputs to {('read' if selection == 1 else 'view')}", style=wx.OK|wx.CANCEL,value="10")
                 if input_box.ShowModal() == wx.ID_OK:
@@ -313,14 +317,14 @@ class MainFrame(wx.Frame):
                         if number < 1:
                             raise ValueError("Number must be greater than 0")
                         text = self.generate_sample_inputs(number)
-                    
+
                     except ValueError as e:
                         self.log.write(str(e))
                         wx.MessageBox(
                             "Invalid number", "Error", wx.OK | wx.ICON_ERROR
                         )
                         return
-                    
+
                     except Exception as e:
                         self.log.write(str(e))
                         wx.MessageBox(
@@ -331,22 +335,22 @@ class MainFrame(wx.Frame):
                     return
         else:
             return
-    
+
         if selection == 2:
             wx.MessageBox(
                 text, "Sample Inputs", wx.OK | wx.RESIZE_BORDER
             )
             return
-        
+
         input_box = wx.TextEntryDialog(None, "Paste Sample Inputs on newlines", style=wx.TE_MULTILINE|wx.RESIZE_BORDER|wx.OK|wx.CANCEL,value=text)
-        
+
         if input_box.ShowModal() == wx.ID_OK:
             self.disable_ui()
             input_data = input_box.GetValue()
             self.config["sample_inputs"] = input_data
             self.save_config()
             os.system('cls' if os.name == 'nt' else 'clear')
-            
+
             # Call a separate thread to process the input
             self.StatusBar.SetStatusText("Processing Sample Inputs")
             thread = threading.Thread(target=self.process_input, args=(input_data,))
@@ -425,7 +429,7 @@ class MainFrame(wx.Frame):
 
             path = file_dialog.GetPath()
             self.text_boxes["input_file"].SetValue(path)
-    
+
 
     def cancel_script(self, event):
         for process in self.running_processes:
@@ -440,9 +444,12 @@ class MainFrame(wx.Frame):
         self.running_processes = list()
 
     def process_timer(self, event):
+        global job_running
         try:
-            if self.main_process_cancelled or not self.main_process.is_alive():
+            if self.main_process_cancelled or not self.main_process.is_alive() or not job_running:
                 self.enable_ui()
+                self.main_process_cancelled = True
+                job_running = False
                 self.main_process.close()
                 self.run_button.SetLabel("Run")
                 self.run_button.Bind(wx.EVT_BUTTON, self.run_script)
@@ -472,7 +479,7 @@ class MainFrame(wx.Frame):
             self.Destroy()
         else:
             event.Veto()
- 
+
     def clear_context(self, event):
         self.context = []
 
@@ -551,7 +558,7 @@ class MainFrame(wx.Frame):
         with open(self.file_path, "w") as f:
             json.dump(self.config, f)
         return flag
-           
+
     def update_config(self, api_check=False):
         # update config file
         flag = True
@@ -578,7 +585,7 @@ class MainFrame(wx.Frame):
 
         if not self.client.api_key == self.config["api_key"]:
             self.set_api_key()
-        
+
         if api_check:
             if not self.is_api_key_valid(self.config["api_key"]):
                wx.MessageBox("API Key Invalid or Check Connection", "Error", wx.OK | wx.ICON_ERROR)
@@ -586,6 +593,7 @@ class MainFrame(wx.Frame):
         return True
 
     def run_script(self, event):
+        global job_running
         flag = self.save_config(api_check=True)
         if not flag:
             return
@@ -610,6 +618,7 @@ class MainFrame(wx.Frame):
         try:
             self.disable_ui()
             self.StatusBar.SetStatusText("Started Job")
+            job_running = True
             self.main_process = multiprocessing.Process(target=call_job, args=(self.config, self.log.log_path))
             self.main_process.start()
             self.main_process_cancelled = False
@@ -632,9 +641,12 @@ class MainFrame(wx.Frame):
         return
 
 def call_job(config, log):
+    global job_running
     try:
         main(config, log)
+        job_running = False
     except Exception as e:
+        job_running = False
         raise e
     return
 
