@@ -1,0 +1,10 @@
+bug when finish running main script doesn't return gui unresponsive (not tested)
+
+add a cancel button
+
+maybe fix api key checks so not as often / async 
+
+add error handling for openai python lib errors (new ones)
+
+
+

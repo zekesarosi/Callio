@@ -40,7 +40,7 @@ descriptions = {
     "output_file": "Enter the name of your output.csv file here.",
     "include_headers": "Check the box to keep the headers of the original file in the output file",
     "keep_data": "Check the box to keep the non-optimized data as well as the optimized. For example if you are using the tool on Column 2, the output file will also have the original data for other columns",
-    "max_workers": "Enter the number of workers to use for the script. If you are unsure, leave this at 15.",
+    "max_workers": "Enter the number of workers to use for the script. If you are unsure, leave this at 50.",
     "model": "Select the model that you want to use for the script. If you are unsure, leave this at gpt-3.5-turbo.",
     "input_cost": "Enter the cost in dollars of the input prompt. For gpt-3.5-turbo the value is $0.0015/1000 tokens.",
     "output_cost": "Enter the cost in dollars of the input prompt. For gpt-3.5-turbo the value is $0.002/1000 tokens.",
@@ -54,7 +54,6 @@ descriptions = {
     "separator": "Enter the separator that you want between data from multiple rows. If you want {productName} - {price} then enter ' - '. This will only work if multiple input columns are provided",
     "row_start": "Enter the row number to start on in the input file. Ex: If you want to start on row 2 then enter 2. If you want to start on the first row then enter: start.",
     "row_end": "Enter the row number to end on in the input file. Ex: If you want to end on row 100 then enter 100. If you want to end on the last row then enter: end.",
-    # and so on for each parameter in your config file
 }
 
 
@@ -191,7 +190,7 @@ class MainFrame(wx.Frame):
         wx.Frame.__init__(self, None, title="Callio", size=self.config["frame_size"])
         panel = wx.Panel(self)
         self.StatusBar = self.CreateStatusBar() 
-        vbox = wx.BoxSizer(wx.VERTICAL)
+        self.vbox = wx.BoxSizer(wx.VERTICAL)
         self.Bind(wx.EVT_CLOSE, self.on_close)
         for i, key in enumerate(self.config.keys()):
             if key == "context":
@@ -229,7 +228,7 @@ class MainFrame(wx.Frame):
 
             hbox.Add(self.text_boxes[key], proportion=1)
 
-            vbox.Add(hbox, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+            self.vbox.Add(hbox, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
         self.run_button = wx.Button(panel, label="Run")
         self.run_button.Bind(wx.EVT_BUTTON, self.run_script)
@@ -252,19 +251,20 @@ class MainFrame(wx.Frame):
         hbox.Add(self.view_context_button, flag=wx.RIGHT, border=10)
         hbox.Add(self.clear_context_button, flag=wx.RIGHT, border=10)
 
-        vbox.Add(hbox, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
-        vbox.Add(self.sample_responses_button, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        self.vbox.Add(hbox, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        self.vbox.Add(self.sample_responses_button, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
         #vbox.Add(self.count_text, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
-        panel.SetSizer(vbox)
+        panel.SetSizer(self.vbox)
         panel.Fit()
         self.client = OpenAI(api_key="")
         self.api_key_warning = False
+
+
         
     def disable_ui(self):
         for key in self.text_boxes.keys():
             self.text_boxes[key].Disable()
-        self.run_button.Disable()
         self.context_button.Disable()
         self.view_context_button.Disable()
         self.clear_context_button.Disable()
@@ -425,8 +425,32 @@ class MainFrame(wx.Frame):
 
             path = file_dialog.GetPath()
             self.text_boxes["input_file"].SetValue(path)
+    
 
+    def cancel_script(self, event):
+        for process in self.running_processes:
+            if process.is_alive():
+                process.terminate()
+                process.join()
+        for child in multiprocessing.active_children():
+            child.terminate()
+            child.join()
 
+        self.main_process_cancelled = True
+        self.running_processes = list()
+
+    def process_timer(self, event):
+        try:
+            if self.main_process_cancelled or not self.main_process.is_alive():
+                self.enable_ui()
+                self.main_process.close()
+                self.run_button.SetLabel("Run")
+                self.run_button.Bind(wx.EVT_BUTTON, self.run_script)
+                self.StatusBar.SetStatusText("Job Complete")
+                self.running_processes.remove(self.main_process)
+                self.timer_process.Stop()
+        except ValueError:
+            self.timer_process.Stop()
     def on_close(self, event):
         # Save config file
         self.save_config()
@@ -514,12 +538,9 @@ class MainFrame(wx.Frame):
         try:
             client = OpenAI(api_key=key)
             response = self.client.completions.create(
-                model="davinci", prompt="This is a test.", max_tokens=5
+                model="davinci", prompt="Test.", max_tokens=2
             )
             return True
-        except openai.AuthenticationError as e:
-            self.log.write(str(e))
-            return False
         except Exception as e:
             self.log.write(str(e))
             return False
@@ -589,9 +610,15 @@ class MainFrame(wx.Frame):
         try:
             self.disable_ui()
             self.StatusBar.SetStatusText("Started Job")
-            process = multiprocessing.Process(target=call_job, args=(self.config, self.log.log_path))
-            process.start()
-            self.running_processes.append(process)
+            self.main_process = multiprocessing.Process(target=call_job, args=(self.config, self.log.log_path))
+            self.main_process.start()
+            self.main_process_cancelled = False
+            self.running_processes.append(self.main_process)
+            self.run_button.SetLabel("Cancel")
+            self.run_button.Bind(wx.EVT_BUTTON, self.cancel_script)
+            self.timer_process = wx.Timer(self)
+            self.Bind(wx.EVT_TIMER, self.process_timer, self.timer_process)
+            self.timer_process.Start(1000)
         except Exception as e:
             self.log.write(f"Job Runtime Error: {e}")
             self.enable_ui()
@@ -602,12 +629,14 @@ class MainFrame(wx.Frame):
                 wx.OK | wx.ICON_ERROR,
             )
             return
+        return
 
 def call_job(config, log):
     try:
         main(config, log)
     except Exception as e:
         raise e
+    return
 
 
 def APPmain():
