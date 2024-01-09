@@ -11,12 +11,15 @@ import csv
 
 import threading
 import multiprocessing
-
+from multiprocessing import Manager
+from multiprocessing import Queue
 from log import Log
 
 from job import response as response
 from job import main
 from job import read_csv_file as read_csv_file
+
+from metrics import Metrics
 
 import concurrent.futures
 
@@ -223,6 +226,8 @@ class MainFrame(wx.Frame):
 
             if key == "input_file":
                 self.text_boxes[key].Bind(wx.EVT_LEFT_DOWN, self.open_file_dialog)
+            elif key == "output_file":
+                self.text_boxes[key].Bind(wx.EVT_LEFT_DOWN, self.save_file_dialog)
             elif key == "model":
                 self.text_boxes[key].Bind(wx.EVT_LEFT_DOWN, self.choose_model)
 
@@ -260,8 +265,24 @@ class MainFrame(wx.Frame):
         self.client = OpenAI(api_key="")
         self.api_key_warning = False
 
+        self.data = multiprocessing.Queue()
+        self.most_recent_message = "Started Job"
 
         
+    def save_file_dialog(self, event):
+        file_dialog = wx.FileDialog(self, "Save", "", "",
+                                        "CSV files(*.csv)|*.*",
+                                        wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT)
+
+        if file_dialog.ShowModal() == wx.ID_CANCEL:
+            return
+
+        path = file_dialog.GetPath()
+        path += ".csv"
+        with open(path, "wb") as file:
+            writer = csv.writer(file, delimiter = ',')
+        self.text_boxes["output_file"].SetValue(path)
+
     def disable_ui(self):
         for key in self.text_boxes.keys():
             self.text_boxes[key].Disable()
@@ -446,9 +467,16 @@ class MainFrame(wx.Frame):
                 self.main_process.close()
                 self.run_button.SetLabel("Run")
                 self.run_button.Bind(wx.EVT_BUTTON, self.run_script)
-                self.StatusBar.SetStatusText("Job Complete")
+                if not self.main_process_cancelled:
+                    self.StatusBar.SetStatusText("Job Complete")
+                else:
+                    self.StatusBar.SetStatusText("Job Cancelled")
                 self.running_processes.remove(self.main_process)
                 self.timer_process.Stop()
+            else:
+                while not self.data.empty():
+                    self.most_recent_message = self.data.get()
+                self.StatusBar.SetStatusText(self.most_recent_message)
         except ValueError:
             self.timer_process.Stop()
     def on_close(self, event):
@@ -537,11 +565,10 @@ class MainFrame(wx.Frame):
     def is_api_key_valid(self, key):
         try:
             client = OpenAI(api_key=key)
-            response = self.client.completions.create(
-                model="davinci", prompt="Test.", max_tokens=2
-            )
+            client.models.list()
             return True
         except Exception as e:
+            print(e)
             self.log.write(str(e))
             return False
 
@@ -610,7 +637,7 @@ class MainFrame(wx.Frame):
         try:
             self.disable_ui()
             self.StatusBar.SetStatusText("Started Job")
-            self.main_process = multiprocessing.Process(target=call_job, args=(self.config, self.log.log_path))
+            self.main_process = multiprocessing.Process(target=call_job, args=(self.config, self.log.log_path, self.data))
             self.main_process.start()
             self.main_process_cancelled = False
             self.running_processes.append(self.main_process)
@@ -631,16 +658,16 @@ class MainFrame(wx.Frame):
             return
         return
 
-def call_job(config, log):
+def call_job(config, log, data):
     try:
-        main(config, log)
+        main(config, log, data, fake=False, error=True)
     except Exception as e:
         raise e
     return
 
 
 def APPmain():
-    app = wx.App()
+    app = wx.App(False)
     frame = MainFrame()
     frame.Show()
     app.MainLoop()

@@ -7,9 +7,10 @@ import time
 import os
 import backoff
 from log import Log
+from box import Box
 
 class Job:
-    def __init__(self, config, log_path):
+    def __init__(self, config, log_path, queue):
         self.config = config
         self.log = Log(log_path)
         self.api_key = self.config["api_key"]
@@ -38,6 +39,8 @@ class Job:
         self.count = len(self.input_column_data)
         self.input_tokens = 0
         self.output_tokens = 0
+
+        self.queue = queue
 
     def format_multi_input(self):
         if len(self.input_columns) > 1:
@@ -69,9 +72,9 @@ class Job:
         self.output_tokens += open_response.usage.completion_tokens
         self.count -= 1
         self.update_cost()
-        print(
-            f"Remaining: {self.count} | Cost: ${round(self.cost, 4)} | Input Tokens: {self.input_tokens} | Output Tokens: {self.output_tokens}", end="\r"
-        )
+        status_data = f"Remaining: {self.count} | Cost: ${round(self.cost, 4)} | Input Tokens: {self.input_tokens} | Output Tokens: {self.output_tokens}"
+        #print(status_data)
+        self.queue.put(status_data)
         open_response = open_response.choices[0].message.content
         return open_response
 
@@ -215,10 +218,36 @@ def read_csv_file(file_name, input_columns_input, row_start="start", row_end="en
 
 
 
-def main(config, log):
-    job = Job(config, log)
-    job.main()
+def main(config, log, data, fake=False,error=False):
+    job = Job(config, log, data)
+    if fake:
+        fake_job(error, data)
+    else:
+        job.main()
 
 
 if __name__ == "__main__":
     main()
+
+
+
+
+def fake_job(error, data):
+    if error:
+        import random
+        while True:
+            if random.randint(1,10) == 7:
+                raise Exception("A RANDOM ERROR OCCURED")
+                break
+            else:
+                print(data["requests"])
+                data["requests"] += 1
+                time.sleep(5)
+    else:
+        while True:
+            time.sleep(10)
+            data["requests"] += 1
+
+        
+
+
